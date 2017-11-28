@@ -14,3 +14,5 @@
 .glide/
 s3-benchmark
 vendor/
+.DS_Store
+benchmark.log
