@@ -498,7 +498,7 @@ func main() {
 
 		// Do some cleanup
 		logit(fmt.Sprint("Doing some cleanup."))
-		deleteAllObjects(copyBucket)
+		deleteAllObjects(bucket, copyBucket)
 		deleteAllBuckets(bucket, copyBucket)
 	}
 
