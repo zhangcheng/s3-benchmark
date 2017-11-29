@@ -28,12 +28,12 @@ import (
 )
 
 // Global variables
-var accessKey, secretKey, urlHost, bucket string
+var accessKey, secretKey, urlHost, bucket, copyBucket string
 var durationSecs, threads, loops int
 var objectSize uint64
 var objectData []byte
-var runningThreads, uploadCount, downloadCount, deleteCount, listCount int32
-var endtime, uploadFinish, downloadFinish, deleteFinish, listFinish time.Time
+var runningThreads, uploadCount, downloadCount, deleteCount, copyCount, listCount int32
+var endtime, uploadFinish, downloadFinish, deleteFinish, listFinish, copyFinish time.Time
 
 func logit(msg string) {
 	fmt.Println(msg)
@@ -88,76 +88,154 @@ func getS3Client() *s3.S3 {
 	return client
 }
 
-func createBucket() {
+func createBucket(buckets ...string) {
 	// Get a client
 	client := getS3Client()
 	// Create our bucket (may already exist without error)
-	in := &s3.CreateBucketInput{Bucket: aws.String(bucket)}
-	if _, err := client.CreateBucket(in); err != nil {
-		log.Fatalf("FATAL: Unable to create bucket %s (is your access and secret correct?): %v", bucket, err)
+	for _, newBucketName := range buckets {
+		in := &s3.CreateBucketInput{Bucket: aws.String(newBucketName)}
+		if _, err := client.CreateBucket(in); err != nil {
+			log.Fatalf("FATAL: Unable to create bucket %s (is your access and secret correct?): %v", newBucketName, err)
+		}
 	}
+
 }
 
-func deleteAllObjects() {
+func deleteAllBuckets(buckets ...string) {
 	// Get a client
 	client := getS3Client()
 	// Use multiple routines to do the actual delete
-	var doneDeletes sync.WaitGroup
-	// Loop deleting our versions reading as big a list as we can
-	var keyMarker, versionID *string
-	var err error
-	for loop := 1; ; loop++ {
-		// Delete all the existing objects and versions in the bucket
-		in := &s3.ListObjectVersionsInput{Bucket: aws.String(bucket), KeyMarker: keyMarker, VersionIdMarker: versionID, MaxKeys: aws.Int64(1000)}
-		if listVersions, listErr := client.ListObjectVersions(in); listErr == nil {
-			delete := &s3.Delete{Quiet: aws.Bool(true)}
-			for _, version := range listVersions.Versions {
-				delete.Objects = append(delete.Objects, &s3.ObjectIdentifier{Key: version.Key, VersionId: version.VersionId})
-			}
-			for _, marker := range listVersions.DeleteMarkers {
-				delete.Objects = append(delete.Objects, &s3.ObjectIdentifier{Key: marker.Key, VersionId: marker.VersionId})
-			}
-			if len(delete.Objects) > 0 {
-				// Start a delete routine
-				doDelete := func(bucket string, delete *s3.Delete) {
-					if _, e := client.DeleteObjects(&s3.DeleteObjectsInput{Bucket: aws.String(bucket), Delete: delete}); e != nil {
-						err = fmt.Errorf("DeleteObjects unexpected failure: %s", e.Error())
-					}
-					doneDeletes.Done()
-				}
-				doneDeletes.Add(1)
-				go doDelete(bucket, delete)
-			}
-			// Advance to next versions
-			if listVersions.IsTruncated == nil || !*listVersions.IsTruncated {
-				break
-			}
-			keyMarker = listVersions.NextKeyMarker
-			versionID = listVersions.NextVersionIdMarker
-		} else {
-			// The bucket may not exist, just ignore in that case
-			if strings.HasPrefix(listErr.Error(), "NoSuchBucket") {
-				return
-			}
-			err = fmt.Errorf("ListObjectVersions unexpected failure: %v", listErr)
-			break
+	for _, bucketName := range buckets {
+		_, err := client.DeleteBucket(&s3.DeleteBucketInput{
+			Bucket: &bucketName,
+		})
+		if err != nil {
+			log.Fatalf("FATAL: Unable to delete bucket: %v, the error was %v", bucketName, err)
 		}
 	}
-	// Wait for deletes to finish
-	doneDeletes.Wait()
-	// If error, it is fatal
-	if err != nil {
-		log.Fatalf("FATAL: Unable to delete objects from bucket: %v", err)
+}
+
+func deleteAllObjectsVersioned(buckets ...string) {
+	// Get a client
+	client := getS3Client()
+	// Use multiple routines to do the actual delete
+	for _, bucketName := range buckets {
+		var doneDeletes sync.WaitGroup
+		fmt.Println("Deleting contents of: ", bucketName)
+		// Loop deleting our versions reading as big a list as we can
+		var keyMarker, versionID *string
+		var err error
+		for loop := 1; ; loop++ {
+			// All of this code only works on versioned buckets... so we need to see if the bucket is versioned
+			// versioning, _ := client.GetBucketVersioning(&s3.GetBucketVersioningInput{Bucket: aws.String(bucketName)})
+
+			// Delete all the existing objects and versions in the bucket
+			in := &s3.ListObjectVersionsInput{Bucket: aws.String(bucketName), KeyMarker: keyMarker, VersionIdMarker: versionID, MaxKeys: aws.Int64(1000)}
+			if listVersions, listErr := client.ListObjectVersions(in); listErr == nil {
+				delete := &s3.Delete{Quiet: aws.Bool(true)}
+				for _, version := range listVersions.Versions {
+					delete.Objects = append(delete.Objects, &s3.ObjectIdentifier{Key: version.Key, VersionId: version.VersionId})
+				}
+				for _, marker := range listVersions.DeleteMarkers {
+					delete.Objects = append(delete.Objects, &s3.ObjectIdentifier{Key: marker.Key, VersionId: marker.VersionId})
+				}
+				if len(delete.Objects) > 0 {
+					// Start a delete routine
+					doDelete := func(bucket string, delete *s3.Delete) {
+						if _, e := client.DeleteObjects(&s3.DeleteObjectsInput{Bucket: aws.String(bucket), Delete: delete}); e != nil {
+							err = fmt.Errorf("DeleteObjects unexpected failure: %s", e.Error())
+						}
+						doneDeletes.Done()
+					}
+					doneDeletes.Add(1)
+					go doDelete(bucketName, delete)
+				}
+				// Advance to next versions
+				if listVersions.IsTruncated == nil || !*listVersions.IsTruncated {
+					break
+				}
+				keyMarker = listVersions.NextKeyMarker
+				versionID = listVersions.NextVersionIdMarker
+			} else {
+				// The bucket may not exist, just ignore in that case
+				if strings.HasPrefix(listErr.Error(), "NoSuchBucket") {
+					return
+				}
+				err = fmt.Errorf("ListObjectVersions unexpected failure: %v", listErr)
+				break
+			}
+		}
+		// Wait for deletes to finish
+		doneDeletes.Wait()
+		// If error, it is fatal
+		if err != nil {
+			log.Fatalf("FATAL: Unable to delete objects from bucket: %v", err)
+		}
+	}
+}
+
+func deleteAllObjects(buckets ...string) {
+	// Get a client
+	client := getS3Client()
+	// Use multiple routines to do the actual delete
+	for _, bucketName := range buckets {
+		var doneDeletes sync.WaitGroup
+		for loop := 1; ; loop++ {
+			// All of this code only works on versioned buckets... so we need to see if the bucket is versioned
+			// versioning, _ := client.GetBucketVersioning(&s3.GetBucketVersioningInput{Bucket: aws.String(bucketName)})
+
+			// Delete all the existing objects and versions in the bucket
+			in := &s3.ListObjectInput{Bucket: aws.String(bucketName), KeyMarker: keyMarker, VersionIdMarker: versionID, MaxKeys: aws.Int64(1000)}
+			if listVersions, listErr := client.ListObjectVersions(in); listErr == nil {
+				delete := &s3.Delete{Quiet: aws.Bool(true)}
+				for _, version := range listVersions.Versions {
+					delete.Objects = append(delete.Objects, &s3.ObjectIdentifier{Key: version.Key, VersionId: version.VersionId})
+				}
+				for _, marker := range listVersions.DeleteMarkers {
+					delete.Objects = append(delete.Objects, &s3.ObjectIdentifier{Key: marker.Key, VersionId: marker.VersionId})
+				}
+				if len(delete.Objects) > 0 {
+					// Start a delete routine
+					doDelete := func(bucket string, delete *s3.Delete) {
+						if _, e := client.DeleteObjects(&s3.DeleteObjectsInput{Bucket: aws.String(bucket), Delete: delete}); e != nil {
+							err = fmt.Errorf("DeleteObjects unexpected failure: %s", e.Error())
+						}
+						doneDeletes.Done()
+					}
+					doneDeletes.Add(1)
+					go doDelete(bucketName, delete)
+				}
+				// Advance to next versions
+				if listVersions.IsTruncated == nil || !*listVersions.IsTruncated {
+					break
+				}
+				keyMarker = listVersions.NextKeyMarker
+				versionID = listVersions.NextVersionIdMarker
+			} else {
+				// The bucket may not exist, just ignore in that case
+				if strings.HasPrefix(listErr.Error(), "NoSuchBucket") {
+					return
+				}
+				err = fmt.Errorf("ListObjectVersions unexpected failure: %v", listErr)
+				break
+			}
+		}
+		// Wait for deletes to finish
+		doneDeletes.Wait()
+		// If error, it is fatal
+		if err != nil {
+			log.Fatalf("FATAL: Unable to delete objects from bucket: %v", err)
+		}
 	}
 }
 
 func runUpload(threadNum int) {
+	client := getS3Client()
 	for time.Now().Before(endtime) {
 		objnum := atomic.AddInt32(&uploadCount, 1)
 		fileobj := bytes.NewReader(objectData)
 		prefix := fmt.Sprintf("Object-%d", objnum)
 		// using aws library instead of http put and gets
-		client := getS3Client()
 		_, err := client.PutObject(&s3.PutObjectInput{
 			Body:   fileobj,
 			Bucket: &bucket,
@@ -174,13 +252,37 @@ func runUpload(threadNum int) {
 	atomic.AddInt32(&runningThreads, -1)
 }
 
+func runCopy(threadNum int) {
+	client := getS3Client()
+	for time.Now().Before(endtime) {
+		atomic.AddInt32(&copyCount, 1)
+		objnum := rand.Int31n(uploadCount) + 1
+		prefix := fmt.Sprintf("Object-%d", objnum)
+		//using aws library instead of puts and gets
+		sourceObject := aws.String(fmt.Sprintf("/%v/%v", bucket, prefix))
+		_, err := client.CopyObject(&s3.CopyObjectInput{
+			Bucket:     &copyBucket,
+			CopySource: sourceObject,
+			Key:        &prefix,
+		})
+
+		if err != nil {
+			log.Fatal("Failed to copy object", err)
+		}
+	}
+	// Remember last done time
+	copyFinish = time.Now()
+	// One less thread
+	atomic.AddInt32(&runningThreads, -1)
+}
+
 func runDownload(threadNum int) {
+	client := getS3Client()
 	for time.Now().Before(endtime) {
 		atomic.AddInt32(&downloadCount, 1)
 		objnum := rand.Int31n(uploadCount) + 1
 		prefix := fmt.Sprintf("Object-%d", objnum)
 		//using aws library instead of puts and gets
-		client := getS3Client()
 		resultFile, err := client.GetObject(&s3.GetObjectInput{
 			Bucket: &bucket,
 			Key:    &prefix,
@@ -202,6 +304,7 @@ func runDownload(threadNum int) {
 }
 
 func runDelete(threadNum int) {
+	client := getS3Client()
 	for {
 		objnum := atomic.AddInt32(&deleteCount, 1)
 		if objnum > uploadCount {
@@ -209,7 +312,7 @@ func runDelete(threadNum int) {
 		}
 		prefix := fmt.Sprintf("Object-%d", objnum)
 		// use aws library to do the work
-		client := getS3Client()
+
 		_, err := client.DeleteObject(&s3.DeleteObjectInput{
 			Bucket: &bucket,
 			Key:    &prefix,
@@ -227,9 +330,7 @@ func runDelete(threadNum int) {
 func runList() {
 	// Get a client
 	client := getS3Client()
-	// Use multiple routines to do the actual delete
-	// var doneList sync.WaitGroup
-	// Loop deleting our versions reading as big a list as we can
+	// just get a complete list loop times of everything in bucket
 	var keyMarker, versionID *string
 	var err error
 	for loop := 1; ; loop++ {
@@ -257,9 +358,6 @@ func runList() {
 			break
 		}
 	}
-	// Wait for deletes to finish
-	// doneList.Wait()
-	// If error, it is fatal
 	if err != nil {
 		log.Fatalf("FATAL: Unable to list objects from bucket: %v", err)
 	}
@@ -268,7 +366,7 @@ func runList() {
 
 func main() {
 	// Hello
-	fmt.Println("Wasabi benchmark program v2.0")
+	fmt.Println("Wasabi benchmark program v2.1")
 
 	// Parse command line
 	myflag := flag.NewFlagSet("myflag", flag.ExitOnError)
@@ -306,8 +404,9 @@ func main() {
 	rand.Read(objectData)
 
 	// Create the bucket and delete all the objects
-	createBucket()
-	deleteAllObjects()
+	copyBucket = fmt.Sprintf("%v-copy", bucket)
+	createBucket(bucket, copyBucket)
+	deleteAllObjects(bucket, copyBucket)
 
 	// Loop running the tests
 	for loop := 1; loop <= loops; loop++ {
@@ -348,6 +447,23 @@ func main() {
 		logit(fmt.Sprintf("Loop %d: GET time %.1f secs, objects = %d, speed = %sB/sec, %.1f operations/sec.",
 			loop, downloadTime, downloadCount, bytefmt.ByteSize(uint64(bps)), float64(downloadCount)/downloadTime))
 
+		// Run the copy case
+		runningThreads = int32(threads)
+		starttime = time.Now()
+		endtime = starttime.Add(time.Second * time.Duration(durationSecs))
+		for n := 1; n <= threads; n++ {
+			go runCopy(n)
+		}
+
+		// Wait for it to finish
+		for atomic.LoadInt32(&runningThreads) > 0 {
+			time.Sleep(time.Millisecond)
+		}
+		copyTime := copyFinish.Sub(starttime).Seconds()
+
+		logit(fmt.Sprintf("Loop %d: COPY time %.1f secs, objects = %d, speed = %sB/sec, %.1f operations/sec.",
+			loop, copyTime, copyCount, bytefmt.ByteSize(uint64(bps)), float64(copyCount)/copyTime))
+
 		// Run the list objects case
 		// note this is single threaded for now
 		starttime = time.Now()
@@ -374,6 +490,11 @@ func main() {
 
 		logit(fmt.Sprintf("Loop %d: DELETE time %.1f secs, %.1f deletes/sec.",
 			loop, deleteTime, float64(uploadCount)/deleteTime))
+
+		// Do some cleanup
+		logit(fmt.Sprint("Doing some cleanup."))
+		deleteAllObjects(copyBucket)
+		deleteAllBuckets(bucket, copyBucket)
 	}
 
 	// All done

@@ -1,4 +1,15 @@
 # Introduction
+
+This is a fork of the s3-benchmark testing tool provided by Wasabi.  I have started off with some minor changes to the application, mostly getting the code up to passing standard go formatting rules, and I am fully leveraging the AWS S3 library for all operations, to allow for other API tests.  I have also moved to using "dep" for dependency management.  
+
+Added the following additional tests:
+      - get bucket listing
+      - copy bucket api
+
+I plan to add additional functionality to the tester over time such as multi-part uploads and multiple size files to enable better benchmarking of different vendor solutions.
+
+# Wasabi Intro
+
 s3-benchmark is a performance testing tool provided by Wasabi for performing S3 operations (PUT, GET, and DELETE) for objects. Besides the bucket configuration, the object size and number of threads varied be given for different tests.
 
 The testing tool is loosely based on the Nasuni (http://www6.nasuni.com/rs/nasuni/images/Nasuni-2015-State-of-Cloud-Storage-Report.pdf) performance benchmarking methodologies used to test the performance of different cloud storage providers
