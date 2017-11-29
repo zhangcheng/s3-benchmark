@@ -180,12 +180,17 @@ func deleteAllObjects(buckets ...string) {
 	// Use multiple routines to do the actual delete
 	for _, bucketName := range buckets {
 		var doneDeletes sync.WaitGroup
+		fmt.Println("Deleting contents of: ", bucketName)
+		// Loop deleting our versions reading as big a list as we can
+		var keyMarker, versionID *string
+		var err error
+
 		for loop := 1; ; loop++ {
 			// All of this code only works on versioned buckets... so we need to see if the bucket is versioned
 			// versioning, _ := client.GetBucketVersioning(&s3.GetBucketVersioningInput{Bucket: aws.String(bucketName)})
 
 			// Delete all the existing objects and versions in the bucket
-			in := &s3.ListObjectInput{Bucket: aws.String(bucketName), KeyMarker: keyMarker, VersionIdMarker: versionID, MaxKeys: aws.Int64(1000)}
+			in := &s3.ListObjectVersionsInput{Bucket: aws.String(bucketName), KeyMarker: keyMarker, VersionIdMarker: versionID, MaxKeys: aws.Int64(1000)}
 			if listVersions, listErr := client.ListObjectVersions(in); listErr == nil {
 				delete := &s3.Delete{Quiet: aws.Bool(true)}
 				for _, version := range listVersions.Versions {
