@@ -1,10 +1,12 @@
 # Introduction
+[![Go Report Card](https://goreportcard.com/badge/github.com/xphyr/s3-benchmark)](https://goreportcard.com/report/github.com/xphyr/s3-benchmark)
 
 This is a fork of the s3-benchmark testing tool provided by Wasabi.  I have started off with some minor changes to the application, mostly getting the code up to passing standard go formatting rules, and I am fully leveraging the AWS S3 library for all operations, to allow for other API tests.  I have also moved to using "dep" for dependency management.  
 
 Added the following additional tests:
       - get bucket listing
       - copy bucket api
+      - added explicit bucket versioning enable flag
 
 I plan to add additional functionality to the tester over time such as multi-part uploads and multiple size files to enable better benchmarking of different vendor solutions.
 

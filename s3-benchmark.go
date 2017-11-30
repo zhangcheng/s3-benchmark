@@ -34,6 +34,7 @@ var objectSize uint64
 var objectData []byte
 var runningThreads, uploadCount, downloadCount, deleteCount, copyCount, listCount int32
 var endtime, uploadFinish, downloadFinish, deleteFinish, listFinish, copyFinish time.Time
+var versioning bool
 
 func logit(msg string) {
 	fmt.Println(msg)
@@ -118,17 +119,24 @@ func deleteAllBuckets(buckets ...string) {
 func deleteAllObjectsVersioned(buckets ...string) {
 	// Get a client
 	client := getS3Client()
-	// Use multiple routines to do the actual delete
+
 	for _, bucketName := range buckets {
 		var doneDeletes sync.WaitGroup
-		fmt.Println("Deleting contents of: ", bucketName)
-		// Loop deleting our versions reading as big a list as we can
 		var keyMarker, versionID *string
 		var err error
+		// All of this code only works on versioned buckets... so we need to see if the bucket is versioned
+		// if there is no versioning on the bucket, break out now.
+		versioningState, err := client.GetBucketVersioning(&s3.GetBucketVersioningInput{
+			Bucket: aws.String(bucketName),
+		})
+		if versioningState.Status == nil || *versioningState.Status == "Disabled" {
+			// there is no versioning state, therefor it cant be enabled
+			// need to see what a versioned state would look like
+			continue
+		}
+		fmt.Println(versioningState)
+		// Loop deleting our versions reading as big a list as we can
 		for loop := 1; ; loop++ {
-			// All of this code only works on versioned buckets... so we need to see if the bucket is versioned
-			// versioning, _ := client.GetBucketVersioning(&s3.GetBucketVersioningInput{Bucket: aws.String(bucketName)})
-
 			// Delete all the existing objects and versions in the bucket
 			in := &s3.ListObjectVersionsInput{Bucket: aws.String(bucketName), KeyMarker: keyMarker, VersionIdMarker: versionID, MaxKeys: aws.Int64(1000)}
 			if listVersions, listErr := client.ListObjectVersions(in); listErr == nil {
@@ -140,6 +148,7 @@ func deleteAllObjectsVersioned(buckets ...string) {
 					delete.Objects = append(delete.Objects, &s3.ObjectIdentifier{Key: marker.Key, VersionId: marker.VersionId})
 				}
 				if len(delete.Objects) > 0 {
+					// Use multiple routines to do the actual delete
 					// Start a delete routine
 					doDelete := func(bucket string, delete *s3.Delete) {
 						if _, e := client.DeleteObjects(&s3.DeleteObjectsInput{Bucket: aws.String(bucket), Delete: delete}); e != nil {
@@ -178,50 +187,39 @@ func deleteAllObjects(buckets ...string) {
 	// Get a client
 	client := getS3Client()
 	// Use multiple routines to do the actual delete
+	var doneDeletes sync.WaitGroup
+	var err error
+	var lastKey string
 	for _, bucketName := range buckets {
-		var doneDeletes sync.WaitGroup
-		fmt.Println("Deleting contents of: ", bucketName)
-		// Loop deleting our versions reading as big a list as we can
-		var keyMarker, versionID *string
-		var err error
 
 		for loop := 1; ; loop++ {
-			// All of this code only works on versioned buckets... so we need to see if the bucket is versioned
-			// versioning, _ := client.GetBucketVersioning(&s3.GetBucketVersioningInput{Bucket: aws.String(bucketName)})
 
-			// Delete all the existing objects and versions in the bucket
-			in := &s3.ListObjectVersionsInput{Bucket: aws.String(bucketName), KeyMarker: keyMarker, VersionIdMarker: versionID, MaxKeys: aws.Int64(1000)}
-			if listVersions, listErr := client.ListObjectVersions(in); listErr == nil {
-				delete := &s3.Delete{Quiet: aws.Bool(true)}
-				for _, version := range listVersions.Versions {
-					delete.Objects = append(delete.Objects, &s3.ObjectIdentifier{Key: version.Key, VersionId: version.VersionId})
-				}
-				for _, marker := range listVersions.DeleteMarkers {
-					delete.Objects = append(delete.Objects, &s3.ObjectIdentifier{Key: marker.Key, VersionId: marker.VersionId})
-				}
-				if len(delete.Objects) > 0 {
-					// Start a delete routine
-					doDelete := func(bucket string, delete *s3.Delete) {
-						if _, e := client.DeleteObjects(&s3.DeleteObjectsInput{Bucket: aws.String(bucket), Delete: delete}); e != nil {
-							err = fmt.Errorf("DeleteObjects unexpected failure: %s", e.Error())
-						}
-						doneDeletes.Done()
+			delete := &s3.Delete{Quiet: aws.Bool(true)}
+
+			resultObjects, err := client.ListObjects(&s3.ListObjectsInput{
+				Bucket: &bucketName,
+				Marker: &lastKey,
+			})
+			if err != nil {
+				fmt.Println("Failed to get bucket contents for delete", err)
+				return
+			}
+			for _, object := range resultObjects.Contents {
+				delete.Objects = append(delete.Objects, &s3.ObjectIdentifier{Key: object.Key})
+				lastKey = *object.Key
+			}
+			if len(delete.Objects) > 0 {
+				// Start a delete routine
+				doDelete := func(bucket string, delete *s3.Delete) {
+					if _, e := client.DeleteObjects(&s3.DeleteObjectsInput{Bucket: aws.String(bucket), Delete: delete}); e != nil {
+						err = fmt.Errorf("DeleteObjects unexpected failure: %s", e.Error())
 					}
-					doneDeletes.Add(1)
-					go doDelete(bucketName, delete)
+					doneDeletes.Done()
 				}
-				// Advance to next versions
-				if listVersions.IsTruncated == nil || !*listVersions.IsTruncated {
-					break
-				}
-				keyMarker = listVersions.NextKeyMarker
-				versionID = listVersions.NextVersionIdMarker
-			} else {
-				// The bucket may not exist, just ignore in that case
-				if strings.HasPrefix(listErr.Error(), "NoSuchBucket") {
-					return
-				}
-				err = fmt.Errorf("ListObjectVersions unexpected failure: %v", listErr)
+				doneDeletes.Add(1)
+				go doDelete(bucketName, delete)
+			}
+			if resultObjects.IsTruncated == nil || !*resultObjects.IsTruncated {
 				break
 			}
 		}
@@ -382,6 +380,7 @@ func main() {
 	myflag.IntVar(&durationSecs, "d", 60, "Duration of each test in seconds")
 	myflag.IntVar(&threads, "t", 1, "Number of threads to run")
 	myflag.IntVar(&loops, "l", 1, "Number of times to repeat test")
+	myflag.BoolVar(&versioning, "v", false, "Enable bucket versioning for the test")
 	var sizeArg string
 	myflag.StringVar(&sizeArg, "z", "1M", "Size of objects in bytes with postfix K, M, and G")
 	if err := myflag.Parse(os.Args[1:]); err != nil {
@@ -401,18 +400,36 @@ func main() {
 	}
 
 	// Echo the parameters
-	logit(fmt.Sprintf("Parameters: url=%s, bucket=%s, duration=%d, threads=%d, loops=%d, size=%s",
-		urlHost, bucket, durationSecs, threads, loops, sizeArg))
+	logit(fmt.Sprintf("Parameters: url=%s, bucket=%s, duration=%d, threads=%d, loops=%d, size=%s, versioning=%v",
+		urlHost, bucket, durationSecs, threads, loops, sizeArg, versioning))
 
 	// Initialize data for the bucket
 	objectData = make([]byte, objectSize)
 	rand.Read(objectData)
 
 	// Create the bucket and delete all the objects
+	fmt.Println("Setting up buckets for test.")
 	copyBucket = fmt.Sprintf("%v-copy", bucket)
 	createBucket(bucket, copyBucket)
 	deleteAllObjects(bucket, copyBucket)
+	deleteAllObjectsVersioned(bucket, copyBucket)
 
+	if versioning {
+		client := getS3Client()
+		// we should explicitly enable versioning on the bucket
+		ver := new(s3.VersioningConfiguration)
+		ver.SetStatus(s3.BucketVersioningStatusEnabled)
+		verinput := &s3.PutBucketVersioningInput{
+			Bucket:                  &copyBucket,
+			VersioningConfiguration: ver,
+		}
+		_, err := client.PutBucketVersioning(verinput)
+		if err != nil {
+			log.Fatal("Unable to enable versioning on bucket: ", bucket)
+		}
+	}
+
+	fmt.Println("Starting the tests, please wait.")
 	// Loop running the tests
 	for loop := 1; loop <= loops; loop++ {
 
@@ -466,8 +483,8 @@ func main() {
 		}
 		copyTime := copyFinish.Sub(starttime).Seconds()
 
-		logit(fmt.Sprintf("Loop %d: COPY time %.1f secs, objects = %d, speed = %sB/sec, %.1f operations/sec.",
-			loop, copyTime, copyCount, bytefmt.ByteSize(uint64(bps)), float64(copyCount)/copyTime))
+		logit(fmt.Sprintf("Loop %d: COPY time %.1f secs, objects = %d, %.1f operations/sec.",
+			loop, copyTime, copyCount, float64(copyCount)/copyTime))
 
 		// Run the list objects case
 		// note this is single threaded for now
@@ -497,8 +514,9 @@ func main() {
 			loop, deleteTime, float64(uploadCount)/deleteTime))
 
 		// Do some cleanup
-		logit(fmt.Sprint("Doing some cleanup."))
+		logit("Doing some cleanup.")
 		deleteAllObjects(bucket, copyBucket)
+		deleteAllObjectsVersioned(bucket, copyBucket)
 		deleteAllBuckets(bucket, copyBucket)
 	}
 
