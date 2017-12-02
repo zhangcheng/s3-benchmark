@@ -1,6 +1,5 @@
 # Introduction
-[![Build Status](https://travis-ci.org/xphyr/s3-benchmark.svg?branch=master)]
-(https://travis-ci.org/xphyr/s3-benchmark.svg?branch=master)
+[![Build Status](https://travis-ci.org/xphyr/s3-benchmark.svg?branch=master)](https://travis-ci.org/xphyr/s3-benchmark.svg?branch=master)
 [![Go Report Card](https://goreportcard.com/badge/github.com/xphyr/s3-benchmark)](https://goreportcard.com/report/github.com/xphyr/s3-benchmark)
 
 This is a fork of the s3-benchmark testing tool provided by Wasabi.  I have started off with some minor changes to the application, mostly getting the code up to passing standard go formatting rules, and I am fully leveraging the AWS S3 library for all operations, to allow for other API tests.  I have also moved to using "dep" for dependency management.  
