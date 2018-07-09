@@ -28,7 +28,7 @@ import (
 )
 
 // Global variables
-var accessKey, secretKey, urlHost, bucket, copyBucket string
+var accessKey, secretKey, region, urlHost, bucket, copyBucket string
 var durationSecs, threads, loops int
 var objectSize uint64
 var objectData []byte
@@ -71,7 +71,7 @@ func getS3Client() *s3.S3 {
 	loglevel := aws.LogOff
 	// Build the rest of the configuration
 	awsConfig := &aws.Config{
-		Region:               aws.String("us-east-1"),
+		Region:               aws.String(region),
 		Endpoint:             aws.String(urlHost),
 		Credentials:          creds,
 		LogLevel:             &loglevel,
@@ -375,6 +375,7 @@ func main() {
 	myflag := flag.NewFlagSet("myflag", flag.ExitOnError)
 	myflag.StringVar(&accessKey, "a", "", "Access key")
 	myflag.StringVar(&secretKey, "s", "", "Secret key")
+	myflag.StringVar(&region, "r", "us-east-1", "Region string")
 	myflag.StringVar(&urlHost, "u", "https://s3.amazonaws.com", "URL for host with method prefix")
 	myflag.StringVar(&bucket, "b", "wasabi-benchmark-bucket", "Bucket for testing")
 	myflag.IntVar(&durationSecs, "d", 60, "Duration of each test in seconds")
@@ -400,8 +401,8 @@ func main() {
 	}
 
 	// Echo the parameters
-	logit(fmt.Sprintf("Parameters: url=%s, bucket=%s, duration=%d, threads=%d, loops=%d, size=%s, versioning=%v",
-		urlHost, bucket, durationSecs, threads, loops, sizeArg, versioning))
+	logit(fmt.Sprintf("Parameters: region=%s, url=%s, bucket=%s, duration=%d, threads=%d, loops=%d, size=%s, versioning=%v",
+		region, urlHost, bucket, durationSecs, threads, loops, sizeArg, versioning))
 
 	// Initialize data for the bucket
 	objectData = make([]byte, objectSize)
